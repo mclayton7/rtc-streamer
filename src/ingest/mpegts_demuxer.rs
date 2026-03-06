@@ -4,10 +4,23 @@ use crate::monitoring::Metrics;
 use bytes::{Buf, Bytes, BytesMut};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 const MPEG_TS_PACKET_SIZE: usize = 188;
 const SYNC_BYTE: u8 = 0x47;
+const PES_MAX_SIZE: usize = 1024 * 1024; // 1MB cap to prevent memory exhaustion
+const PID_PAT: u16 = 0;
+
+/// State machine for PID discovery before streaming begins.
+#[derive(Debug)]
+enum DemuxState {
+    /// Waiting to parse the PAT (Program Association Table) at PID 0.
+    NeedPAT,
+    /// PAT found; waiting to parse the PMT (Program Map Table) at this PID.
+    NeedPMT { pmt_pid: u16 },
+    /// Video PID discovered; actively demuxing video frames.
+    Streaming { video_pid: u16 },
+}
 
 pub struct MpegTsDemuxer {
     video_tx: broadcast::Sender<VideoFrame>,
@@ -33,8 +46,9 @@ impl MpegTsDemuxer {
         let mut packet_count = 0u64;
         let mut video_pes_buffer = BytesMut::new();
         let mut fallback_pts = 0u64;
+        let mut state = DemuxState::NeedPAT;
 
-        info!("MPEG-TS demuxer started");
+        info!("MPEG-TS demuxer started, waiting for PAT");
 
         while let Some(data) = rx.recv().await {
             // Strip RTP header if present, then append MPEG-TS payload
@@ -75,6 +89,9 @@ impl MpegTsDemuxer {
 
                 // Skip adaptation field
                 if has_adaptation {
+                    if offset >= packet_data.len() {
+                        continue;
+                    }
                     let adaptation_len = packet_data[offset] as usize;
                     offset += 1 + adaptation_len;
                 }
@@ -83,22 +100,136 @@ impl MpegTsDemuxer {
                     continue;
                 }
 
-                let payload = &packet_data[offset..];
+                let ts_payload = &packet_data[offset..];
 
-                // Simplified: Assume video on PID 256
-                // In production, parse PAT/PMT for dynamic PID discovery
-                if pid == 256 {
-                    if payload_start && !video_pes_buffer.is_empty() {
-                        // Process accumulated PES packet
-                        self.process_video_pes(&video_pes_buffer, &mut fallback_pts);
-                        video_pes_buffer.clear();
+                match &state {
+                    DemuxState::NeedPAT => {
+                        // PAT/PMT sections always begin at payload_unit_start_indicator; skip continuations
+                        if pid == PID_PAT && payload_start {
+                            if let Some(pmt_pid) = Self::parse_pat(ts_payload) {
+                                info!("PAT parsed, found PMT PID: {}", pmt_pid);
+                                state = DemuxState::NeedPMT { pmt_pid };
+                            }
+                        }
                     }
-                    video_pes_buffer.extend_from_slice(payload);
+                    DemuxState::NeedPMT { pmt_pid } => {
+                        let pmt_pid = *pmt_pid;
+                        if pid == pmt_pid && payload_start {
+                            if let Some(video_pid) = Self::parse_pmt(ts_payload) {
+                                info!("PMT parsed, streaming video from PID: {}", video_pid);
+                                state = DemuxState::Streaming { video_pid };
+                            }
+                        }
+                    }
+                    DemuxState::Streaming { video_pid } => {
+                        let video_pid = *video_pid;
+                        if pid == video_pid {
+                            if payload_start && !video_pes_buffer.is_empty() {
+                                // Flush completed PES unit before starting a new one
+                                self.process_video_pes(&video_pes_buffer, &mut fallback_pts);
+                                video_pes_buffer.clear();
+                            }
+
+                            // Guard against memory exhaustion from malformed streams
+                            if video_pes_buffer.len() + ts_payload.len() > PES_MAX_SIZE {
+                                warn!(
+                                    "PES buffer exceeded {} bytes; discarding and resetting",
+                                    PES_MAX_SIZE
+                                );
+                                video_pes_buffer.clear();
+                            } else {
+                                video_pes_buffer.extend_from_slice(ts_payload);
+                            }
+                        }
+                    }
                 }
             }
         }
 
+        // Flush any remaining PES data when the input stream ends
+        if !video_pes_buffer.is_empty() {
+            self.process_video_pes(&video_pes_buffer, &mut fallback_pts);
+        }
+
+        info!("MPEG-TS demuxer stopped after {} packets", packet_count);
         Ok(())
+    }
+
+    /// Parse a PAT section (PID 0) to extract the first program's PMT PID.
+    ///
+    /// The payload begins with a pointer field (1 byte) when `payload_unit_start_indicator` is set.
+    fn parse_pat(payload: &[u8]) -> Option<u16> {
+        if payload.is_empty() {
+            return None;
+        }
+        let pointer = payload[0] as usize;
+        // Need: pointer(1) + table_id(1) + section_length(2) + ts_id(2) + version_etc(3) = 9 + pointer
+        if 1 + pointer + 8 > payload.len() {
+            return None;
+        }
+        let table = &payload[1 + pointer..];
+
+        if table[0] != 0x00 {
+            // Not a PAT table_id
+            return None;
+        }
+
+        let section_length = (((table[1] & 0x0F) as usize) << 8) | table[2] as usize;
+        // Program entries start at byte 8 of table; CRC occupies the last 4 bytes of the section
+        let programs_end = std::cmp::min(3 + section_length.saturating_sub(4), table.len());
+
+        let mut i = 8;
+        while i + 4 <= programs_end {
+            let program_num = ((table[i] as u16) << 8) | table[i + 1] as u16;
+            let pid = (((table[i + 2] & 0x1F) as u16) << 8) | table[i + 3] as u16;
+            if program_num != 0 {
+                // program_num 0 is the NIT pointer; return first real program's PMT PID
+                return Some(pid);
+            }
+            i += 4;
+        }
+
+        None
+    }
+
+    /// Parse a PMT section to extract the first video elementary stream PID.
+    ///
+    /// Recognises H.264 (0x1B), H.265 (0x24), and MPEG-1/2 video (0x01/0x02).
+    fn parse_pmt(payload: &[u8]) -> Option<u16> {
+        if payload.is_empty() {
+            return None;
+        }
+        let pointer = payload[0] as usize;
+        // Need: pointer(1) + table_id(1) + section_length(2) + program_number(2) + version_etc(3) + pcr_pid(2) + program_info_length(2) = 13 + pointer
+        if 1 + pointer + 12 > payload.len() {
+            return None;
+        }
+        let table = &payload[1 + pointer..];
+
+        if table[0] != 0x02 {
+            // Not a PMT table_id
+            return None;
+        }
+
+        let section_length = (((table[1] & 0x0F) as usize) << 8) | table[2] as usize;
+        let program_info_length = (((table[10] & 0x0F) as usize) << 8) | table[11] as usize;
+
+        let mut i = 12 + program_info_length;
+        let streams_end = std::cmp::min(3 + section_length.saturating_sub(4), table.len());
+
+        while i + 5 <= streams_end {
+            let stream_type = table[i];
+            let elementary_pid = (((table[i + 1] & 0x1F) as u16) << 8) | table[i + 2] as u16;
+            let es_info_length = (((table[i + 3] & 0x0F) as usize) << 8) | table[i + 4] as usize;
+
+            if matches!(stream_type, 0x01 | 0x02 | 0x1B | 0x24) {
+                return Some(elementary_pid);
+            }
+
+            i += 5 + es_info_length;
+        }
+
+        None
     }
 
     fn process_video_pes(&self, data: &[u8], fallback_pts: &mut u64) {
@@ -127,7 +258,7 @@ impl MpegTsDemuxer {
         let pts = if pts_dts_flags >= 2 && data.len() >= 14 {
             Self::extract_pts(&data[9..14])
         } else {
-            // Fallback: synthesize PTS at ~30fps (3000 ticks in 90kHz clock)
+            // Fallback: synthesise PTS at ~30fps (3000 ticks in 90kHz clock)
             *fallback_pts += 3000;
             *fallback_pts
         };
@@ -150,7 +281,7 @@ impl MpegTsDemuxer {
         };
 
         if let Err(e) = self.video_tx.send(frame) {
-            debug!("No video subscribers: {}", e);
+            warn!("Frame dropped — no active video subscribers: {}", e);
         }
     }
 
@@ -165,7 +296,7 @@ impl MpegTsDemuxer {
     }
 
     /// Strip RTP header from a UDP packet if present, returning the MPEG-TS payload.
-    /// Passes through unchanged if the packet is not RTP (e.g., raw MPEG-TS over UDP).
+    /// Passes through unchanged if the packet does not look like RTP.
     fn strip_rtp_header(packet: &[u8]) -> &[u8] {
         // RTP requires at least 12 bytes and version field must be 2
         if packet.len() < 12 || (packet[0] >> 6) != 2 {
@@ -179,9 +310,16 @@ impl MpegTsDemuxer {
         let mut offset = 12 + cc * 4; // Fixed header + CSRC list
 
         // Skip RTP header extension
-        if has_extension && offset + 4 <= packet.len() {
+        if has_extension {
+            if offset + 4 > packet.len() {
+                return &[];
+            }
             let ext_len =
-                ((packet[offset + 2] as usize) << 8 | (packet[offset + 3] as usize)) * 4;
+                ((packet[offset + 2] as usize) << 8 | packet[offset + 3] as usize) * 4;
+            // Bounds check: guard against malformed extension length field
+            if offset + 4 + ext_len > packet.len() {
+                return &[];
+            }
             offset += 4 + ext_len;
         }
 

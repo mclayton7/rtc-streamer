@@ -18,7 +18,8 @@ impl H264Parser {
     }
 
     pub fn get_params(&self) -> Option<H264Params> {
-        self.params.read().unwrap().clone()
+        // If the lock is poisoned, treat it as no params available rather than panicking
+        self.params.read().ok()?.clone()
     }
 
     /// Extract SPS/PPS parameter sets from an H.264 Annex B byte stream.
@@ -35,7 +36,10 @@ impl H264Parser {
         }
 
         if let (Some(sps), Some(pps)) = (sps, pps) {
-            *self.params.write().unwrap() = Some(H264Params { sps, pps });
+            // If the lock is poisoned, silently skip the update rather than panicking
+            if let Ok(mut guard) = self.params.write() {
+                *guard = Some(H264Params { sps, pps });
+            }
         }
     }
 

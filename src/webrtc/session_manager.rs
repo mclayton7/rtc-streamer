@@ -99,4 +99,12 @@ impl SessionManager {
     pub fn pipeline(&self) -> Arc<MediaPipeline> {
         self.pipeline.clone()
     }
+
+    pub fn ice_server_urls(&self) -> Vec<String> {
+        self.config.stun_servers.clone()
+    }
+
+    pub fn max_viewers(&self) -> usize {
+        self.config.max_viewers
+    }
 }

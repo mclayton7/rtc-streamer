@@ -1,3 +1,7 @@
+// Set to true to enable verbose console output during development
+const DEBUG = false;
+function dbg(...args) { if (DEBUG) console.log(...args); }
+
 class RTCStreamerClient {
     constructor() {
         this.ws = null;
@@ -11,6 +15,12 @@ class RTCStreamerClient {
         this.loadingElement = document.getElementById('loading');
         this.connectBtn = document.getElementById('connectBtn');
         this.disconnectBtn = document.getElementById('disconnectBtn');
+
+        // ICE servers received from the server via the 'config' message
+        this.iceServers = null;
+        // Previous stats snapshot for delta-based bitrate calculation
+        this.prevBytesReceived = 0;
+        this.prevStatsTime = null;
 
         this.setupEventListeners();
         this.statsInterval = null;
@@ -27,12 +37,13 @@ class RTCStreamerClient {
             this.showLoading(true);
             this.connectBtn.disabled = true;
 
-            // Connect WebSocket
-            const wsUrl = `ws://${window.location.host}/signal`;
+            // Use wss:// when the page is served over HTTPS to avoid mixed-content errors
+            const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
+            const wsUrl = `${wsProtocol}${window.location.host}/signal`;
             this.ws = new WebSocket(wsUrl);
 
             this.ws.onopen = () => {
-                console.log('WebSocket connected');
+                dbg('WebSocket connected');
                 this.sendMessage({ type: 'watch' });
             };
 
@@ -41,15 +52,14 @@ class RTCStreamerClient {
                 await this.handleSignalingMessage(message);
             };
 
-            this.ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
+            this.ws.onerror = () => {
                 this.updateStatus('Connection error', 'error');
                 this.showLoading(false);
                 this.connectBtn.disabled = false;
             };
 
             this.ws.onclose = () => {
-                console.log('WebSocket closed');
+                dbg('WebSocket closed');
                 this.updateStatus('Disconnected', 'disconnected');
                 this.showLoading(false);
                 this.connectBtn.disabled = false;
@@ -58,7 +68,6 @@ class RTCStreamerClient {
             };
 
         } catch (error) {
-            console.error('Connection error:', error);
             this.updateStatus('Failed to connect', 'error');
             this.showLoading(false);
             this.connectBtn.disabled = false;
@@ -66,9 +75,14 @@ class RTCStreamerClient {
     }
 
     async handleSignalingMessage(message) {
-        console.log('Received signaling message:', message.type);
+        dbg('Received signaling message:', message.type);
 
         switch (message.type) {
+            case 'config':
+                // Store ICE servers sent by the server so handleOffer can use them
+                this.iceServers = message.ice_servers.map(url => ({ urls: url }));
+                dbg('ICE servers configured:', this.iceServers.length);
+                break;
             case 'offer':
                 await this.handleOffer(message.sdp);
                 break;
@@ -76,27 +90,23 @@ class RTCStreamerClient {
                 await this.handleIceCandidate(message.candidate);
                 break;
             case 'error':
-                console.error('Server error:', message.message);
                 this.updateStatus(`Error: ${message.message}`, 'error');
+                this.showLoading(false);
+                this.connectBtn.disabled = false;
                 break;
         }
     }
 
     async handleOffer(sdp) {
-        console.log('Handling offer');
+        dbg('Handling offer');
 
-        // Create RTCPeerConnection
-        const config = {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' }
-            ]
-        };
-
-        this.pc = new RTCPeerConnection(config);
+        // Use ICE servers from the server config, or fall back to a default
+        const iceServers = this.iceServers || [{ urls: 'stun:stun.l.google.com:19302' }];
+        this.pc = new RTCPeerConnection({ iceServers });
 
         // Handle incoming tracks
         this.pc.ontrack = (event) => {
-            console.log('Received track:', event.track.kind);
+            dbg('Received track:', event.track.kind);
             if (event.track.kind === 'video') {
                 this.videoElement.srcObject = event.streams[0];
                 this.showLoading(false);
@@ -109,7 +119,7 @@ class RTCStreamerClient {
         // Handle ICE candidates
         this.pc.onicecandidate = (event) => {
             if (event.candidate) {
-                console.log('Sending ICE candidate');
+                dbg('Sending ICE candidate');
                 this.sendMessage({
                     type: 'ice-candidate',
                     candidate: event.candidate.candidate
@@ -119,7 +129,7 @@ class RTCStreamerClient {
 
         // Handle connection state changes
         this.pc.onconnectionstatechange = () => {
-            console.log('Connection state:', this.pc.connectionState);
+            dbg('Connection state:', this.pc.connectionState);
             this.connStatusElement.textContent = this.pc.connectionState;
 
             if (this.pc.connectionState === 'failed' ||
@@ -145,18 +155,16 @@ class RTCStreamerClient {
             sdp: answer.sdp
         });
 
-        console.log('Answer sent');
+        dbg('Answer sent');
     }
 
     async handleIceCandidate(candidate) {
         if (this.pc) {
             try {
-                await this.pc.addIceCandidate(new RTCIceCandidate({
-                    candidate: candidate
-                }));
-                console.log('ICE candidate added');
+                await this.pc.addIceCandidate(new RTCIceCandidate({ candidate }));
+                dbg('ICE candidate added');
             } catch (error) {
-                console.error('Error adding ICE candidate:', error);
+                // Ignore — ICE candidate errors are non-fatal
             }
         }
     }
@@ -195,28 +203,56 @@ class RTCStreamerClient {
     }
 
     startStats() {
+        this.prevBytesReceived = 0;
+        this.prevStatsTime = null;
+
         this.statsInterval = setInterval(async () => {
             if (!this.pc) return;
 
             try {
                 const stats = await this.pc.getStats();
+                const now = Date.now();
                 let bytesReceived = 0;
                 let packetsLost = 0;
+                let roundTripTime = null;
 
                 stats.forEach(report => {
                     if (report.type === 'inbound-rtp' && report.kind === 'video') {
                         bytesReceived = report.bytesReceived || 0;
                         packetsLost = report.packetsLost || 0;
+                        // roundTripTime may be present on inbound-rtp in some browsers
+                        if (report.roundTripTime != null) {
+                            roundTripTime = report.roundTripTime;
+                        }
+                    }
+                    // candidate-pair gives us a more reliable RTT source
+                    if (report.type === 'candidate-pair' && report.state === 'succeeded' &&
+                            report.currentRoundTripTime != null) {
+                        roundTripTime = report.currentRoundTripTime;
                     }
                 });
 
-                // Calculate bitrate (rough estimate)
-                const bitrate = Math.round((bytesReceived * 8) / 1000); // kbps
-                this.bitrateElement.textContent = `${bitrate} kbps`;
+                // Delta-based bitrate: compute bytes received since last sample
+                let bitrateKbps = 0;
+                if (this.prevStatsTime !== null) {
+                    const elapsedSec = (now - this.prevStatsTime) / 1000;
+                    const bytesDelta = bytesReceived - this.prevBytesReceived;
+                    bitrateKbps = elapsedSec > 0
+                        ? Math.round((bytesDelta * 8) / (elapsedSec * 1000))
+                        : 0;
+                }
+                this.prevBytesReceived = bytesReceived;
+                this.prevStatsTime = now;
+
+                this.bitrateElement.textContent = `${bitrateKbps} kbps`;
                 this.packetsLostElement.textContent = packetsLost;
 
+                if (roundTripTime != null) {
+                    this.latencyElement.textContent = `${Math.round(roundTripTime * 1000)} ms`;
+                }
+
             } catch (error) {
-                console.error('Error getting stats:', error);
+                // Stats errors are non-fatal; ignore silently
             }
         }, 1000);
     }
@@ -228,13 +264,14 @@ class RTCStreamerClient {
         }
         this.bitrateElement.textContent = '0 kbps';
         this.packetsLostElement.textContent = '0';
-        this.latencyElement.textContent = '0 ms';
+        this.latencyElement.textContent = '— ms';
         this.connStatusElement.textContent = 'Disconnected';
+        this.prevBytesReceived = 0;
+        this.prevStatsTime = null;
     }
 }
 
 // Initialize client when page loads
 document.addEventListener('DOMContentLoaded', () => {
-    const client = new RTCStreamerClient();
-    console.log('RTC Streamer Client initialized');
+    new RTCStreamerClient();
 });

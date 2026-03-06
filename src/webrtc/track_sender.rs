@@ -11,6 +11,7 @@ use webrtc::track::track_local::TrackLocalWriter;
 
 const MTU: usize = 1200; // Conservative MTU for RTP
 const NALU_TYPE_FU_A: u8 = 28;
+const MAX_CONSECUTIVE_ERRORS: u32 = 5;
 
 pub struct TrackSender {
     session_id: String,
@@ -42,6 +43,7 @@ impl TrackSender {
             let mut sequence_number: u16 = 0;
             let mut frame_count = 0u64;
             let mut waiting_for_keyframe = false;
+            let mut consecutive_errors: u32 = 0;
 
             loop {
                 match video_rx.recv().await {
@@ -69,7 +71,7 @@ impl TrackSender {
                             h264_parser.update_params(&frame.data);
                         }
 
-                        if let Err(e) = Self::send_h264_frame(
+                        match Self::send_h264_frame(
                             &track,
                             &frame.data,
                             frame.timestamp,
@@ -79,11 +81,23 @@ impl TrackSender {
                         )
                         .await
                         {
-                            error!(
-                                "Failed to send frame for session {}: {}",
-                                session_id, e
-                            );
-                            break;
+                            Ok(()) => {
+                                consecutive_errors = 0;
+                            }
+                            Err(e) => {
+                                consecutive_errors += 1;
+                                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                                    error!(
+                                        "Too many consecutive send errors for session {} ({}), closing: {}",
+                                        session_id, consecutive_errors, e
+                                    );
+                                    break;
+                                }
+                                warn!(
+                                    "Transient send error for session {} (attempt {}/{}): {}",
+                                    session_id, consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                                );
+                            }
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {

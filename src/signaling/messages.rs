@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum SignalingMessage {
     Watch,
+    /// Server → client: ICE server configuration. Sent before the offer so the
+    /// client can construct RTCPeerConnection with the correct ICE servers.
+    Config {
+        ice_servers: Vec<String>,
+    },
     Offer {
         sdp: String,
     },
@@ -17,4 +22,3 @@ pub enum SignalingMessage {
         message: String,
     },
 }
-

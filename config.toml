@@ -1,9 +1,12 @@
 [network]
 udp_bind = "0.0.0.0:5004"
+# Buffer capacity between UDP receiver and MPEG-TS demuxer.
+# Keep this small and aligned with max_buffer_frames to minimise hidden latency.
+udp_channel_capacity = 10
 
 [media]
+# Size of the broadcast channel distributing frames to all viewers.
 max_buffer_frames = 10
-target_latency_ms = 100
 
 [webrtc]
 max_viewers = 10
