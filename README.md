@@ -1,0 +1,198 @@
+# RTC Streamer
+
+A high-performance MPEG-TS to WebRTC streaming service built in Rust. Receives MPEG-TS streams over UDP/RTP and delivers them to web browsers with ultra-low latency (<500ms).
+
+## Features
+
+- **Ultra-low latency**: Sub-500ms glass-to-glass latency using WebRTC
+- **Efficient broadcasting**: Single demuxer broadcasts to multiple viewers (up to 10 concurrent)
+- **H.264 passthrough**: Zero-copy video streaming
+- **WebRTC-native**: Browser-based playback without plugins
+- **Production-ready**: Built with Rust for safety and performance
+
+## Architecture
+
+```
+UDP/RTP MPEG-TS → Demuxer → Frame Queue → WebRTC Broadcast → Multiple Browsers
+                                ↓
+                          Signaling Server (WebSocket)
+```
+
+## Quick Start
+
+### Prerequisites
+
+- Rust 1.70+ (install from https://rustup.rs/)
+- An MPEG-TS stream source (e.g., ffmpeg)
+
+### Build
+
+```bash
+cargo build --release
+```
+
+### Configure
+
+Edit `config.toml` to customize settings:
+
+```toml
+[network]
+udp_bind = "0.0.0.0:5004"  # UDP port for MPEG-TS input
+
+[media]
+max_buffer_frames = 10      # Frame buffer size
+target_latency_ms = 100     # Target latency
+
+[webrtc]
+max_viewers = 10            # Maximum concurrent viewers
+stun_servers = ["stun:stun.l.google.com:19302"]
+
+[signaling]
+http_bind = "0.0.0.0:8080"  # HTTP server port
+static_dir = "./static"     # Web UI files
+```
+
+### Run
+
+1. Start the server:
+
+```bash
+cargo run --release
+```
+
+2. Send a test stream using ffmpeg:
+
+```bash
+# From a local video file
+ffmpeg -re -i video.mp4 -c:v libx264 -preset ultrafast -tune zerolatency \
+  -f mpegts udp://127.0.0.1:5004
+
+# From a webcam (macOS)
+ffmpeg -f avfoundation -i "0" -c:v libx264 -preset ultrafast -tune zerolatency \
+  -f mpegts udp://127.0.0.1:5004
+
+# From a webcam (Linux)
+ffmpeg -f v4l2 -i /dev/video0 -c:v libx264 -preset ultrafast -tune zerolatency \
+  -f mpegts udp://127.0.0.1:5004
+```
+
+3. Open a browser and navigate to:
+
+```
+http://localhost:8080
+```
+
+4. Click "Connect" to start watching the stream!
+
+## Testing
+
+### Manual Testing
+
+1. **Latency test**: Add a timestamp overlay to your source:
+
+```bash
+ffmpeg -re -i video.mp4 -vf "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='%{localtime}':x=10:y=10:fontsize=24:fontcolor=white" \
+  -c:v libx264 -preset ultrafast -tune zerolatency -f mpegts udp://127.0.0.1:5004
+```
+
+Compare the displayed timestamp with your system clock.
+
+2. **Multi-viewer test**: Open 5-10 browser tabs to verify all play smoothly.
+
+3. **Resource usage**: Monitor with `htop` or Activity Monitor.
+
+### Expected Performance
+
+- **Latency**: 200-400ms end-to-end
+- **CPU usage**: <50% on modern CPU with 10 viewers
+- **Memory**: ~150MB total
+
+## API Endpoints
+
+- `GET /` - Web player UI
+- `GET /signal` - WebSocket signaling endpoint
+- `GET /api/health` - Health check
+- `GET /api/stats` - Active viewer count
+
+## Troubleshooting
+
+### No video appears
+
+1. Check that the UDP stream is being sent:
+   ```bash
+   netstat -an | grep 5004
+   ```
+
+2. Check server logs for errors:
+   ```bash
+   RUST_LOG=debug cargo run
+   ```
+
+3. Verify your firewall allows UDP port 5004 and TCP port 8080
+
+### High latency
+
+1. Reduce `max_buffer_frames` in config.toml
+2. Use `tune=zerolatency` in ffmpeg encoding
+3. Check network conditions
+
+### Connection fails
+
+1. Ensure STUN server is accessible
+2. Check browser console for WebRTC errors
+3. Try a different browser (Chrome/Firefox work best)
+
+## Project Structure
+
+```
+rtc-streamer/
+├── src/
+│   ├── ingest/          # UDP/RTP/MPEG-TS ingestion
+│   ├── media/           # Frame handling and H.264 parsing
+│   ├── webrtc/          # WebRTC peer management
+│   ├── signaling/       # WebSocket signaling server
+│   └── monitoring/      # Metrics and health checks
+├── static/              # Web UI (HTML/JS/CSS)
+├── config.toml          # Runtime configuration
+└── Cargo.toml           # Dependencies
+```
+
+## Development
+
+### Running with debug logs
+
+```bash
+RUST_LOG=debug cargo run
+```
+
+### Building for production
+
+```bash
+cargo build --release
+```
+
+The optimized binary will be at `target/release/rtc-streamer`.
+
+## Limitations
+
+- **Video codec**: H.264 only (most common, universal browser support)
+- **Audio codec**: AAC input (transcoding to Opus not yet implemented)
+- **Max viewers**: Configurable, default 10
+- **No DVR**: Live streaming only, no recording
+
+## Future Enhancements
+
+- [ ] AAC to Opus audio transcoding
+- [ ] H.265 support
+- [ ] TURN server for NAT traversal
+- [ ] Recording/DVR functionality
+- [ ] Adaptive bitrate
+- [ ] Multiple stream inputs
+
+## License
+
+MIT
+
+## Contributing
+
+Contributions welcome! Please open an issue or PR.
