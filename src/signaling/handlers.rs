@@ -54,7 +54,7 @@ pub async fn handle_websocket(socket: WebSocket, session_manager: Arc<SessionMan
                                             message: e.to_string(),
                                         };
                                         if let Ok(json) = serde_json::to_string(&error_msg) {
-                                            let _ = sender.send(Message::Text(json)).await;
+                                            let _ = sender.send(Message::Text(json.into())).await;
                                         }
                                         break;
                                     }
@@ -85,7 +85,7 @@ pub async fn handle_websocket(socket: WebSocket, session_manager: Arc<SessionMan
                     warn!("WebSocket ping timeout for session: {}", session_id);
                     break;
                 }
-                if sender.send(Message::Ping(vec![])).await.is_err() {
+                if sender.send(Message::Ping(vec![].into())).await.is_err() {
                     break;
                 }
             }
@@ -113,7 +113,7 @@ async fn handle_signaling_message(
                 ice_servers: session_manager.ice_server_urls(),
             };
             let json = serde_json::to_string(&config_msg)?;
-            sender.send(Message::Text(json)).await?;
+            sender.send(Message::Text(json.into())).await?;
 
             // Create peer connection
             let peer = session_manager.create_peer(session_id.to_string()).await?;
@@ -126,7 +126,7 @@ async fn handle_signaling_message(
                 sdp: offer.sdp.clone(),
             };
             let json = serde_json::to_string(&offer_msg)?;
-            sender.send(Message::Text(json)).await?;
+            sender.send(Message::Text(json.into())).await?;
 
             info!("Sent config + offer to client: {}", session_id);
         }
