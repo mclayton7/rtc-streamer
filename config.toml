@@ -13,5 +13,5 @@ max_viewers = 10
 stun_servers = ["stun:stun.l.google.com:19302"]
 
 [signaling]
-http_bind = "0.0.0.0:8080"
+http_bind = "0.0.0.0:8888"
 static_dir = "./static"

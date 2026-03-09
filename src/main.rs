@@ -57,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
     // Start MPEG-TS demuxer (handles RTP depacketization internally)
     let demuxer = MpegTsDemuxer::new(
         pipeline.video_sender(),
-        pipeline.audio_sender(),
+        pipeline.metadata_sender(),
         metrics.clone(),
     );
     tokio::spawn(async move {
@@ -67,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Create WebRTC session manager
-    let session_manager = Arc::new(SessionManager::new(config.webrtc.clone(), pipeline.clone())?);
+    let session_manager = Arc::new(SessionManager::new(config.webrtc.clone(), pipeline.clone(), metrics.clone())?);
 
     // Start signaling server
     let signaling_server =

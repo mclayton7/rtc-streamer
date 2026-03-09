@@ -49,7 +49,7 @@ impl SignalingServer {
             .route("/signal", get(websocket_handler))
             .route("/api/health", get(health_handler))
             .route("/api/stats", get(stats_handler))
-            .nest_service("/", ServeDir::new(&self.config.static_dir))
+            .fallback_service(ServeDir::new(&self.config.static_dir))
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind(&self.config.http_bind).await?;
@@ -66,7 +66,7 @@ async fn websocket_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_websocket(socket, state.session_manager))
+    ws.on_upgrade(move |socket| handle_websocket(socket, state.session_manager, state.metrics))
 }
 
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {

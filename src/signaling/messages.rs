@@ -1,3 +1,4 @@
+use crate::media::KlvField;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,5 +21,14 @@ pub enum SignalingMessage {
     },
     Error {
         message: String,
+    },
+    /// Server → client: decoded MISB ST 0601 KLV metadata fields.
+    Metadata {
+        timestamp: u64,
+        fields: Vec<KlvField>,
+    },
+    /// Server → client: whether the UDP source is actively sending frames.
+    StreamStatus {
+        online: bool,
     },
 }

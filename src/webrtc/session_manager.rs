@@ -1,6 +1,7 @@
 use crate::config::WebRtcConfig;
 use crate::error::{Result, StreamError};
 use crate::media::MediaPipeline;
+use crate::monitoring::Metrics;
 use crate::webrtc::PeerConnection;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,10 +18,11 @@ pub struct SessionManager {
     pipeline: Arc<MediaPipeline>,
     peers: Arc<RwLock<HashMap<String, Arc<PeerConnection>>>>,
     api: Arc<webrtc::api::API>,
+    metrics: Arc<Metrics>,
 }
 
 impl SessionManager {
-    pub fn new(config: WebRtcConfig, pipeline: Arc<MediaPipeline>) -> Result<Self> {
+    pub fn new(config: WebRtcConfig, pipeline: Arc<MediaPipeline>, metrics: Arc<Metrics>) -> Result<Self> {
         let mut media_engine = MediaEngine::default();
 
         // Register H.264 codec
@@ -39,6 +41,7 @@ impl SessionManager {
             pipeline,
             peers: Arc::new(RwLock::new(HashMap::new())),
             api: Arc::new(api),
+            metrics,
         })
     }
 
@@ -98,6 +101,10 @@ impl SessionManager {
 
     pub fn pipeline(&self) -> Arc<MediaPipeline> {
         self.pipeline.clone()
+    }
+
+    pub fn metrics(&self) -> Arc<Metrics> {
+        self.metrics.clone()
     }
 
     pub fn ice_server_urls(&self) -> Vec<String> {

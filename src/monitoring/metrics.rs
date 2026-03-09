@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 use tokio::time;
 use tracing::info;
@@ -9,6 +9,7 @@ pub struct Metrics {
     frames_processed: Arc<AtomicU64>,
     frames_dropped: Arc<AtomicU64>,
     bytes_received: Arc<AtomicU64>,
+    last_frame_at: Arc<AtomicU64>,
     start_time: SystemTime,
 }
 
@@ -18,16 +19,34 @@ impl Metrics {
             frames_processed: Arc::new(AtomicU64::new(0)),
             frames_dropped: Arc::new(AtomicU64::new(0)),
             bytes_received: Arc::new(AtomicU64::new(0)),
+            last_frame_at: Arc::new(AtomicU64::new(0)),
             start_time: SystemTime::now(),
         }
     }
 
     pub fn record_frame(&self) {
         self.frames_processed.fetch_add(1, Ordering::Relaxed);
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.last_frame_at.store(now_ms, Ordering::Relaxed);
     }
 
-    pub fn record_frame_dropped(&self) {
-        self.frames_dropped.fetch_add(1, Ordering::Relaxed);
+    pub fn record_frames_dropped(&self, n: u64) {
+        self.frames_dropped.fetch_add(n, Ordering::Relaxed);
+    }
+
+    pub fn stream_active(&self, timeout_ms: u64) -> bool {
+        let last = self.last_frame_at.load(Ordering::Relaxed);
+        if last == 0 {
+            return false;
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        now.saturating_sub(last) < timeout_ms
     }
 
     pub fn record_bytes(&self, bytes: u64) {

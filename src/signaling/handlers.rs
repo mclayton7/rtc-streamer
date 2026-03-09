@@ -1,9 +1,13 @@
+use crate::media::MetadataFrame;
+use crate::monitoring::Metrics;
 use crate::signaling::messages::SignalingMessage;
 use crate::webrtc::SessionManager;
 use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tokio::time;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -13,7 +17,7 @@ const PING_INTERVAL: Duration = Duration::from_secs(30);
 const PONG_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_MESSAGE_BYTES: usize = 64 * 1024; // 64 KB is generous for signaling messages
 
-pub async fn handle_websocket(socket: WebSocket, session_manager: Arc<SessionManager>) {
+pub async fn handle_websocket(socket: WebSocket, session_manager: Arc<SessionManager>, metrics: Arc<Metrics>) {
     let session_id = Uuid::new_v4().to_string();
     info!("WebSocket connection established: {}", session_id);
 
@@ -23,6 +27,13 @@ pub async fn handle_websocket(socket: WebSocket, session_manager: Arc<SessionMan
     let ping_start = tokio::time::Instant::now() + PING_INTERVAL;
     let mut ping_interval = time::interval_at(ping_start, PING_INTERVAL);
     let mut last_pong = Instant::now();
+
+    // Channel used to forward MetadataFrames from a spawned broadcast subscriber
+    // to this WebSocket handler without a borrow conflict on the broadcast receiver.
+    let (meta_fwd_tx, mut meta_fwd_rx) = mpsc::channel::<MetadataFrame>(32);
+
+    let mut status_interval = time::interval(Duration::from_secs(1));
+    let mut stream_was_active: Option<bool> = None;
 
     loop {
         tokio::select! {
@@ -44,6 +55,7 @@ pub async fn handle_websocket(socket: WebSocket, session_manager: Arc<SessionMan
                                     &session_id,
                                     &session_manager,
                                     &mut sender,
+                                    &meta_fwd_tx,
                                 )
                                 .await
                                 {
@@ -89,6 +101,29 @@ pub async fn handle_websocket(socket: WebSocket, session_manager: Arc<SessionMan
                     break;
                 }
             }
+            Some(frame) = meta_fwd_rx.recv() => {
+                let msg = SignalingMessage::Metadata {
+                    timestamp: frame.timestamp,
+                    fields: (*frame.fields).clone(),
+                };
+                if let Ok(json) = serde_json::to_string(&msg) {
+                    if sender.send(Message::Text(json.into())).await.is_err() {
+                        break;
+                    }
+                }
+            }
+            _ = status_interval.tick() => {
+                let online = metrics.stream_active(3000);
+                if stream_was_active != Some(online) {
+                    stream_was_active = Some(online);
+                    let msg = SignalingMessage::StreamStatus { online };
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        if sender.send(Message::Text(json.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -102,6 +137,7 @@ async fn handle_signaling_message(
     session_id: &str,
     session_manager: &SessionManager,
     sender: &mut futures::stream::SplitSink<WebSocket, Message>,
+    meta_fwd_tx: &mpsc::Sender<MetadataFrame>,
 ) -> anyhow::Result<()> {
     match message {
         SignalingMessage::Watch => {
@@ -140,7 +176,29 @@ async fn handle_signaling_message(
 
                 // Start streaming
                 let pipeline = session_manager.pipeline();
-                peer.start_streaming(pipeline).await?;
+                peer.start_streaming(pipeline.clone(), session_manager.metrics()).await?;
+
+                // Spawn a task that reads from the metadata broadcast and forwards
+                // frames to this WebSocket handler via the mpsc channel.
+                let mut meta_rx: broadcast::Receiver<MetadataFrame> =
+                    pipeline.subscribe_metadata();
+                let fwd_tx = meta_fwd_tx.clone();
+                tokio::spawn(async move {
+                    loop {
+                        match meta_rx.recv().await {
+                            Ok(frame) => {
+                                if fwd_tx.send(frame).await.is_err() {
+                                    break; // WebSocket handler closed
+                                }
+                            }
+                            Err(broadcast::error::RecvError::Lagged(n)) => {
+                                warn!("KLV metadata subscriber lagged by {} frames", n);
+                                // Continue — skip lagged frames rather than disconnecting
+                            }
+                            Err(_) => break, // Sender dropped
+                        }
+                    }
+                });
 
                 info!("Streaming started for session: {}", session_id);
             } else {

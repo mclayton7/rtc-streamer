@@ -100,3 +100,84 @@ impl H264Parser {
             .any(|nal| Self::get_nal_type(nal) == 5)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_keyframe_idr_4byte() {
+        let data = [0x00, 0x00, 0x00, 0x01, 0x65, 0xAB];
+        assert!(H264Parser::is_keyframe(&data));
+    }
+
+    #[test]
+    fn is_keyframe_non_idr() {
+        let data = [0x00, 0x00, 0x00, 0x01, 0x61];
+        assert!(!H264Parser::is_keyframe(&data));
+    }
+
+    #[test]
+    fn is_keyframe_empty() {
+        assert!(!H264Parser::is_keyframe(&[]));
+    }
+
+    #[test]
+    fn is_keyframe_3byte_start_code() {
+        let data = [0x00, 0x00, 0x01, 0x65];
+        assert!(H264Parser::is_keyframe(&data));
+    }
+
+    #[test]
+    fn is_keyframe_sps_then_idr() {
+        // SPS (0x67) followed by IDR (0x65)
+        let data = [0x00, 0x00, 0x00, 0x01, 0x67, 0x01, 0x00, 0x00, 0x00, 0x01, 0x65];
+        assert!(H264Parser::is_keyframe(&data));
+    }
+
+    #[test]
+    fn find_nal_units_single() {
+        let data = [0x00, 0x00, 0x00, 0x01, 0xAB, 0xCD];
+        let units = H264Parser::find_nal_units(&data);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0], &[0xAB, 0xCD]);
+    }
+
+    #[test]
+    fn find_nal_units_multiple() {
+        let data = [0x00, 0x00, 0x00, 0x01, 0xAB, 0x00, 0x00, 0x00, 0x01, 0xCD];
+        let units = H264Parser::find_nal_units(&data);
+        assert_eq!(units.len(), 2);
+        assert_eq!(units[0], &[0xAB]);
+        assert_eq!(units[1], &[0xCD]);
+    }
+
+    #[test]
+    fn find_nal_units_mixed_start_codes() {
+        // 4-byte then 3-byte start code
+        let data = [0x00, 0x00, 0x00, 0x01, 0xAB, 0x00, 0x00, 0x01, 0xCD];
+        let units = H264Parser::find_nal_units(&data);
+        assert_eq!(units.len(), 2);
+        assert_eq!(units[0], &[0xAB]);
+        assert_eq!(units[1], &[0xCD]);
+    }
+
+    #[test]
+    fn find_nal_units_empty() {
+        assert!(H264Parser::find_nal_units(&[]).is_empty());
+    }
+
+    #[test]
+    fn find_nal_units_no_start_code() {
+        let data = [0xAB, 0xCD, 0xEF];
+        assert!(H264Parser::find_nal_units(&data).is_empty());
+    }
+
+    #[test]
+    fn get_nal_type_masks() {
+        assert_eq!(H264Parser::get_nal_type(&[0xFF]), 0x1F);
+        assert_eq!(H264Parser::get_nal_type(&[0x67]), 7);
+        assert_eq!(H264Parser::get_nal_type(&[0x65]), 5);
+        assert_eq!(H264Parser::get_nal_type(&[]), 0);
+    }
+}

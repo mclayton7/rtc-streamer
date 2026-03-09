@@ -1,8 +1,9 @@
 mod frame;
 mod h264_parser;
+pub mod klv_parser;
 mod pipeline;
-mod audio_transcoder;
 
-pub use frame::{AudioFrame, VideoFrame};
+pub use frame::{MetadataFrame, VideoFrame};
 pub use h264_parser::H264Parser;
+pub use klv_parser::KlvField;
 pub use pipeline::MediaPipeline;

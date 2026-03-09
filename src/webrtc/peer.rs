@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::media::MediaPipeline;
+use crate::monitoring::Metrics;
 use crate::webrtc::TrackSender;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -97,10 +98,6 @@ impl PeerConnection {
         Ok(())
     }
 
-    pub async fn get_local_description(&self) -> Option<RTCSessionDescription> {
-        self.pc.local_description().await
-    }
-
     pub async fn add_ice_candidate(&self, candidate: String) -> Result<()> {
         use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 
@@ -113,13 +110,14 @@ impl PeerConnection {
         Ok(())
     }
 
-    pub async fn start_streaming(&self, pipeline: Arc<MediaPipeline>) -> Result<()> {
+    pub async fn start_streaming(&self, pipeline: Arc<MediaPipeline>, metrics: Arc<Metrics>) -> Result<()> {
         info!("Starting streaming for session: {}", self.session_id);
 
         let sender = TrackSender::new(
             self.session_id.clone(),
             self.video_track.clone(),
             pipeline,
+            metrics,
         );
 
         sender.start().await?;
@@ -141,7 +139,4 @@ impl PeerConnection {
         Ok(())
     }
 
-    pub fn session_id(&self) -> &str {
-        &self.session_id
-    }
 }

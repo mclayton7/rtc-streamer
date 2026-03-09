@@ -1,5 +1,6 @@
 use crate::error::{Result, StreamError};
 use crate::media::{H264Parser, MediaPipeline};
+use crate::monitoring::Metrics;
 use bytes::Bytes;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -17,6 +18,7 @@ pub struct TrackSender {
     session_id: String,
     track: Arc<TrackLocalStaticRTP>,
     pipeline: Arc<MediaPipeline>,
+    metrics: Arc<Metrics>,
 }
 
 impl TrackSender {
@@ -24,11 +26,13 @@ impl TrackSender {
         session_id: String,
         track: Arc<TrackLocalStaticRTP>,
         pipeline: Arc<MediaPipeline>,
+        metrics: Arc<Metrics>,
     ) -> Self {
         Self {
             session_id,
             track,
             pipeline,
+            metrics,
         }
     }
 
@@ -37,6 +41,7 @@ impl TrackSender {
         let track = self.track.clone();
         let session_id = self.session_id.clone();
         let h264_parser = self.pipeline.h264_parser();
+        let metrics = self.metrics.clone();
 
         tokio::spawn(async move {
             info!("Track sender started for session: {}", session_id);
@@ -105,6 +110,7 @@ impl TrackSender {
                             "Session {} lagged by {} frames, seeking to next keyframe",
                             session_id, n
                         );
+                        metrics.record_frames_dropped(n);
                         waiting_for_keyframe = true;
                     }
                     Err(broadcast::error::RecvError::Closed) => {

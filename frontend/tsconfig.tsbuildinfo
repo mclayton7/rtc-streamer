@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/geo.ts","./src/index.ts","./src/main.tsx","./src/types.ts","./src/components/metadatapanel.tsx","./src/components/platformmap.tsx","./src/components/statspanel.tsx","./src/components/videoplayer.tsx","./src/hooks/usesignaling.ts","./src/hooks/usewebrtc.ts"],"version":"5.9.3"}

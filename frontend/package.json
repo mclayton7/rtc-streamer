@@ -1,0 +1,37 @@
+{
+  "name": "rtc-streamer-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "build:lib": "tsc -b && BUILD_MODE=lib vite build",
+    "preview": "vite preview"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/rtc-streamer.es.js",
+      "require": "./dist/rtc-streamer.cjs.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "main": "./dist/rtc-streamer.cjs.js",
+  "module": "./dist/rtc-streamer.es.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "dependencies": {
+    "leaflet": "^1.9.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.14",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vite-plugin-dts": "^4.5.4"
+  }
+}

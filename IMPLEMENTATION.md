@@ -79,17 +79,37 @@ The MPEG-TS to WebRTC streaming service has been successfully implemented accord
 
 ### Phase 5: Web Client ✅
 
-**Files Created:**
-- `static/index.html` - Web player UI
-- `static/player.js` - WebRTC client implementation
-- `static/style.css` - Modern, responsive styling
+The web client is a React + TypeScript app built with Vite, located in `frontend/`.
+`cargo run` serves whatever is in `static/`, so **you must build the frontend first**:
+
+```bash
+cd frontend
+npm install       # first time only
+npm run build     # outputs to ../static/
+cd ..
+cargo run --release
+```
+
+**Source layout (`frontend/src/`):**
+- `hooks/useWebRTC.ts` - WebRTC session management hook
+- `hooks/useSignaling.ts` - WebSocket + auto-reconnect hook
+- `components/VideoPlayer.tsx` - Video element with overlays
+- `components/StatsPanel.tsx` - Bitrate / packet-loss / latency display
+- `components/MetadataPanel.tsx` - MISB KLV metadata with change highlighting
+- `components/PlatformMap.tsx` - Leaflet map with UAV marker and FOV sector
+- `App.tsx` - Root component
 
 **Features:**
-- One-click connect/disconnect
+- One-click connect/disconnect with auto-reconnect (exponential backoff, 1 s → 30 s)
 - Live connection status indicator
-- Real-time stats (bitrate, packet loss, connection state)
-- Auto-reconnect capability
+- Real-time stats (bitrate, packet loss, RTT latency)
+- MISB ST 0601 KLV metadata panel
+- Live map with platform position, frame center, and field-of-view overlay
+- "Waiting for stream source" banner when UDP source is offline
 - Responsive design (mobile-friendly)
+
+The frontend is also buildable as a reusable library (`npm run build:lib`).
+See `frontend/INTEGRATION.md` for details.
 
 ### Phase 6: Configuration & Monitoring ✅
 
@@ -163,7 +183,13 @@ static_dir = "./static"     # Web UI directory
 
 ## Testing Instructions
 
-### 1. Start the Server
+### 1. Build the Frontend (first time / after UI changes)
+
+```bash
+cd frontend && npm install && npm run build && cd ..
+```
+
+### 2. Start the Server
 
 ```bash
 cargo run --release
@@ -181,7 +207,7 @@ INFO  HTTP server on: 0.0.0.0:8080
 INFO  Ready to receive streams!
 ```
 
-### 2. Send Test Stream
+### 3. Send Test Stream
 
 Using ffmpeg:
 
@@ -203,18 +229,18 @@ ffmpeg -f avfoundation -i "0" -c:v libx264 -preset ultrafast -tune zerolatency \
 - `-f mpegts`: Output format
 - `udp://127.0.0.1:5004`: Destination
 
-### 3. Connect Browser
+### 4. Connect Browser
 
 1. Open browser: `http://localhost:8080`
 2. Click "Connect" button
 3. Video should appear within 1-2 seconds
 4. Check stats for connection quality
 
-### 4. Multi-Viewer Test
+### 5. Multi-Viewer Test
 
 Open 5-10 browser tabs to the same URL. All should play smoothly.
 
-### 5. Verify Latency
+### 6. Verify Latency
 
 Add timestamp overlay:
 
