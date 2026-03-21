@@ -29,12 +29,11 @@ UDP/RTP MPEG-TS → Demuxer → Frame Queue → WebRTC Broadcast → Multiple Br
 
 ## Key Implementation Decisions
 
-### 1. Simplified MPEG-TS Demuxer
-- **What**: Custom parser instead of using `mpeg2ts-reader` library
-- **Why**: Library API changes made integration complex; simplified parser meets MVP needs
-- **Trade-off**: Currently assumes video on PID 256 (not dynamic PAT/PMT parsing)
+### 1. Dynamic MPEG-TS Demuxer
+- **What**: Custom parser with full PAT/PMT discovery instead of using `mpeg2ts-reader` library
+- **Why**: Library API changes made integration complex; custom parser with dynamic PID discovery meets all needs
+- **How**: Uses a `DemuxState` state machine (`NeedPAT` → `NeedPMT` → `Streaming`) to discover the video PID at runtime by parsing PAT (PID 0) then PMT. Supports H.264 (0x1B), H.265 (0x24), and MPEG-1/2 video (0x01/0x02) stream types
 - **Location**: `src/ingest/mpegts_demuxer.rs`
-- **Future**: Can add full PAT/PMT parsing for production
 
 ### 2. Audio Deferred
 - **What**: Audio transcoding (AAC→Opus) not implemented
@@ -130,11 +129,13 @@ Most complex file. Handles RTP packetization:
 - Fragments large NALs using FU-A
 - Writes RTP packets to WebRTC track
 
-### `src/ingest/mpegts_demuxer.rs` (155 lines)
-Simplified MPEG-TS parser:
-- Looks for sync byte (0x47)
-- Extracts PID from packet header
-- Assumes video on PID 256 ⚠️
+### `src/ingest/mpegts_demuxer.rs` (~340 lines)
+Full MPEG-TS parser with dynamic PID discovery:
+- `DemuxState` state machine: `NeedPAT` → `NeedPMT` → `Streaming`
+- Parses PAT (PID 0) to find PMT PID, then PMT to find video elementary stream PID
+- Supports H.264 (0x1B), H.265 (0x24), MPEG-1/2 (0x01/0x02) stream types
+- PES accumulation with 1MB cap to prevent memory exhaustion
+- Extracts PTS from PES header; falls back to synthesized 30fps timestamps
 - Detects keyframes by looking for NAL type 5 (IDR)
 
 ### `static/player.js` (230 lines)
@@ -232,11 +233,10 @@ Compare displayed time with system clock. Should be <500ms.
 - **Workaround**: Video-only streaming
 - **Fix**: Uncomment `symphonia` and `opus` in Cargo.toml, implement transcoding
 
-### 2. Fixed Video PID ⚠️
-- **Issue**: Assumes video on PID 256 (see `mpegts_demuxer.rs:82`)
-- **Impact**: Won't work with streams using different PIDs
-- **Fix**: Add PAT/PMT parsing to discover PIDs dynamically
-- **Location**: `src/ingest/mpegts_demuxer.rs` - add PAT (PID 0) and PMT parsing
+### 2. ~~Fixed Video PID~~ ✅ Resolved
+- **Was**: Hardcoded VIDEO_PID=256
+- **Fix**: Dynamic PAT/PMT parsing implemented via `DemuxState` state machine in `mpegts_demuxer.rs`
+- **Status**: Video PID is now discovered at runtime from the transport stream's PAT → PMT tables
 
 ### 3. No TURN Server
 - **Issue**: May not work through strict NATs
@@ -299,7 +299,7 @@ Compare displayed time with system clock. Should be <500ms.
 
 ### High Priority
 1. **Audio Support** - Implement AAC→Opus transcoding
-2. **Dynamic PID Discovery** - Parse PAT/PMT tables
+2. ~~**Dynamic PID Discovery**~~ ✅ Implemented (PAT/PMT parsing via `DemuxState`)
 3. **Error Recovery** - Handle stream interruptions gracefully
 4. **TURN Support** - Better NAT traversal
 
@@ -354,7 +354,8 @@ Compare displayed time with system clock. Should be <500ms.
 // MPEG-TS
 MPEG_TS_PACKET_SIZE = 188   // Standard transport packet size
 SYNC_BYTE = 0x47            // MPEG-TS sync byte
-VIDEO_PID = 256             // Assumed video PID ⚠️
+PID_PAT = 0                 // PAT always on PID 0; video PID discovered dynamically via PAT→PMT
+PES_MAX_SIZE = 1_048_576    // 1MB cap to prevent memory exhaustion from malformed streams
 
 // RTP
 MTU = 1200                  // Conservative MTU for fragmentation
@@ -428,7 +429,7 @@ ls -lh target/release/rtc-streamer
 ## Contact Points for Issues
 
 ### If video doesn't play:
-1. Check `src/ingest/mpegts_demuxer.rs` - PID detection
+1. Check `src/ingest/mpegts_demuxer.rs` - PAT/PMT parsing and `DemuxState` transitions
 2. Check `src/webrtc/track_sender.rs` - RTP packetization
 3. Check browser console - WebRTC errors
 
